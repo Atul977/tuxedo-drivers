@@ -1,0 +1,59 @@
+name: Sync Upstream Stable Tags (Rebase)
+
+on:
+  schedule:
+    # Runs at 08:00 UTC every 10 days
+    - cron: '0 8 */10 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork's repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for new upstream tag
+        id: check_version
+        run: |
+          set -e 
+          
+          git remote add upstream https://gitlab.com/tuxedocomputers/development/packages/tuxedo-drivers.git
+          git fetch upstream --tags
+          
+          latest_upstream_tag=$(git tag -l 'v*' --sort='-version:refname' | head -n 1)
+          current_base_tag=$(git tag -l 'v*' --sort='-version:refname' --merged HEAD | head -n 1)
+          
+          echo "new_version_found=false" >> $GITHUB_OUTPUT
+
+          # Check if tags exist and are different
+          if [ -n "$current_base_tag" ] && [ -n "$latest_upstream_tag" ] && [ "$latest_upstream_tag" != "$current_base_tag" ]; then
+            # Check if upstream tag is actually newer
+            highest_version=$(printf "%s\n%s" "$latest_upstream_tag" "$current_base_tag" | sort -V | tail -n 1)
+            
+            if [ "$highest_version" = "$latest_upstream_tag" ]; then
+              echo "New base tag found: $latest_upstream_tag"
+              echo "new_version_found=true" >> $GITHUB_OUTPUT
+              echo "latest_tag=$latest_upstream_tag" >> $GITHUB_OUTPUT
+              echo "old_tag=$current_base_tag" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Rebase onto upstream tag and push
+        if: steps.check_version.outputs.new_version_found == 'true'
+        env:
+          LATEST_TAG: ${{ steps.check_version.outputs.latest_tag }}
+          OLD_TAG: ${{ steps.check_version.outputs.old_tag }}
+        run: |
+          set -e 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "Rebasing commits from $OLD_TAG onto $LATEST_TAG"
+          git rebase --onto "$LATEST_TAG" "$OLD_TAG"
+          git push --force
